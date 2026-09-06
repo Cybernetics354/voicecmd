@@ -1,0 +1,20 @@
+[Unit]
+Description=VoiceCmd - Whisper.cpp Voice Command Controller
+After=pipewire.service pulseaudio.service sound.target
+Wants=pipewire.service
+
+[Service]
+Type=simple
+# Executable location (adjust if installed elsewhere, e.g. /usr/local/bin/voicecmd)
+ExecStart=%h/.local/bin/voicecmd -config %h/.config/voicecmd/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+RestartSec=3
+Restart=on-failure
+RestartSec=3
+
+# Environment
+Environment=PATH=/usr/local/bin:/usr/bin:%h/.local/bin
+Environment=PULSE_SERVER=unix:/run/user/%U/pulse/native
+
+[Install]
+WantedBy=default.target

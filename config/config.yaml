@@ -1,0 +1,110 @@
+# VoiceCmd Configuration
+# Press & hold combination -> records microphone -> release combination -> transcribe with whisper.cpp -> execute command
+
+hotkey:
+  # Combination of keys to hold while speaking (e.g. "ctrl+space", "alt+v", "super+v", "f9", "KEY_LEFTCTRL+KEY_SPACE")
+  key: "ctrl+space"
+  # Specific /dev/input/event* device path (leave empty to automatically listen on all connected keyboards)
+  device: ""
+
+audio:
+  # Audio input device (empty string uses system default microphone)
+  device: ""
+  # Whisper models require 16000Hz mono audio
+  sample_rate: 16000
+  channels: 1
+
+stt:
+  # Path to whisper-cli binary
+  binary_path: "~/Projects/voicecmd/whisper.cpp/build/bin/whisper-cli"
+  # Path to GGML model file
+  model_path: "~/Projects/voicecmd/whisper.cpp/models/ggml-base.en.bin"
+  # Spoken language ("en" or "auto")
+  language: "en"
+  # CPU threads for whisper inference
+  threads: 4
+  # Minimum similarity threshold (0.0 to 1.0) to match a command
+  threshold: 0.75
+  # Keep the recorded WAV file after transcription (useful for debugging)
+  keep_wav: false
+  # WAV output file location
+  wav_path: "/tmp/voicecmd_recording.wav"
+
+commands:
+  # Open terminal
+  terminal:
+    phrases:
+      - "open terminal"
+      - "launch terminal"
+      - "terminal"
+    command:
+      program: "ghostty"
+      args: []
+
+  # Open browser
+  browser:
+    phrases:
+      - "open browser"
+      - "open brave"
+      - "launch browser"
+    command:
+      program: "brave"
+      args: []
+
+  # Volume Controls (via wpctl)
+  volume_up:
+    phrases:
+      - "volume up"
+      - "turn up volume"
+      - "louder"
+    command:
+      program: "wpctl"
+      args: ["set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"]
+
+  volume_down:
+    phrases:
+      - "volume down"
+      - "turn down volume"
+      - "quieter"
+    command:
+      program: "wpctl"
+      args: ["set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]
+
+  volume_mute:
+    phrases:
+      - "mute audio"
+      - "mute sound"
+      - "mute"
+      - "unmute"
+    command:
+      program: "wpctl"
+      args: ["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
+
+  # System notification (passes {transcript} placeholder)
+  notification:
+    phrases:
+      - "hello"
+      - "say hello"
+      - "test voice"
+    command:
+      program: "notify-send"
+      args: ["VoiceCmd", "Voice command detected: {transcript}"]
+
+  # Lock screen
+  lock_screen:
+    phrases:
+      - "lock screen"
+      - "lock session"
+    command:
+      program: "loginctl"
+      args: ["lock-session"]
+
+  # Power controls
+  shutdown:
+    phrases:
+      - "shut down"
+      - "turn off computer"
+      - "power off"
+    command:
+      program: "systemctl"
+      args: ["poweroff"]
