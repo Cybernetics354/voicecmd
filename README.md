@@ -9,6 +9,10 @@ Hold down a configured key combination (e.g., `Ctrl+Space`) to record your micro
 ## Features
 
 - **Push-To-Talk Global Hotkey**: Uses Linux kernel `evdev` to capture key press and release events directly across X11, Wayland, and console/TTY.
+- **Dynamic System Tray & Context Menu**:
+  - **State-aware Icon**: Changes icon color and badge dynamically based on daemon state (**Idle**, **Recording**, and **Transcribing**).
+  - **Live Configuration Display**: Displays active hotkey, Whisper STT model & language, engine parameters, audio device, loaded voice commands with an expandable submenu of phrases, and the current config file path.
+  - **Quick Actions**: "Reload Configuration" (with desktop notification), "Open Configuration File" in default desktop editor, and "Quit VoiceCmd".
 - **Local & Offline Speech-to-Text**: Integrates directly with `whisper.cpp` (`whisper-cli`), ensuring low latency and privacy without cloud dependencies.
 - **Intelligent Command Matching**:
   - Exact phrase matching
@@ -18,7 +22,7 @@ Hold down a configured key combination (e.g., `Ctrl+Space`) to record your micro
 - **Multiple Operational Modes**:
   - **Daemon mode** (`voicecmd`): Background hotkey listener with IPC socket support.
   - **Interactive Terminal PTT** (`voicecmd -ptt`): Press Enter to record, speak, and press Enter to stop. Great for testing without root/evdev permissions.
-  - **Compositor / IPC Triggers** (`voicecmd -trigger [start|stop|status]`): Integrate directly with Wayland compositors like Niri, Sway, or Hyprland via Unix domain socket (`/tmp/voicecmd.sock`).
+  - **Compositor / IPC Triggers** (`voicecmd trigger [start|stop|status|load [path]]` or `voicecmd -trigger ...`): Integrate directly with Wayland compositors like Niri, Sway, or Hyprland via Unix domain socket (`/tmp/voicecmd.sock`), and dynamically reload configurations.
   - **Direct Transcription Test** (`voicecmd -transcribe file.wav`): Test whisper transcription and command matching on pre-recorded audio.
   - **Device Lister** (`voicecmd -list-devices`): View all microphone inputs and keyboard devices.
 - **Systemd Integration**: Includes user systemd service unit.
@@ -53,10 +57,16 @@ voicecmd/
 │   ├── matcher/
 │   │   ├── matcher.go        # Hybrid exact, token, and fuzzy similarity matcher
 │   │   └── matcher_test.go   # Matcher tests
-│   └── stt/
-│       ├── stt.go            # Whisper STT engine
-│       ├── cleaner.go        # Punctuation & whisper artifact cleaner
-│       └── *_test.go         # STT tests
+│   ├── stt/
+│   │   ├── stt.go            # Whisper STT engine
+│   │   ├── cleaner.go        # Punctuation & whisper artifact cleaner
+│   │   └── *_test.go         # STT tests
+│   └── tray/
+│       ├── tray.go           # System tray manager & StatusNotifierItem DBus integration
+│       ├── state.go          # State machine (Idle, Recording, Transcribing) & tooltips
+│       ├── icon.go           # Crisp procedural anti-aliased RGBA PNG icon generator
+│       ├── open_config.go    # Cross-desktop configuration file opener (xdg-open / editor)
+│       └── tray_test.go      # Tray unit and icon validation tests
 ├── systemd/
 │   ├── voicecmd.service      # Systemd user service unit
 │   └── README.md             # Systemd installation instructions
@@ -127,6 +137,10 @@ hotkey:
   key: "ctrl+space"
   # Optional: path to specific /dev/input/event* device, or empty to listen on all keyboards
   device: ""
+
+tray:
+  # Enable desktop system tray status indicator icon and context menu
+  enabled: true
 
 audio:
   # Audio input device (empty string uses system default microphone)
@@ -219,6 +233,49 @@ commands:
 
 ---
 
+## System Tray & Desktop Indicator
+
+When running in daemon mode, `voicecmd` exports a modern `org.kde.StatusNotifierItem` via D-Bus session bus, making it natively compatible with Wayland bars (such as Noctalia, Waybar, Swaybar) and X11 system trays (Polybar, Tint2, KDE Plasma, GNOME with AppIndicator).
+
+### State-Aware Icons
+
+The tray icon immediately changes appearance based on VoiceCmd's operational state:
+
+| State | Icon Badge | Description | Hover Tooltip |
+|---|---|---|---|
+| **Idle** | Slate circle + Cyan microphone | Daemon listening, ready for input | `VoiceCmd - Idle (Hotkey: ctrl+space)` |
+| **Recording** | Crimson red circle + White microphone + Indicator | Active microphone capture | `VoiceCmd - Recording microphone...` |
+| **Transcribing** | Amber circle + White microphone + Busy accent | Whisper STT inference & matching | `VoiceCmd - Transcribing speech...` |
+
+### Context Menu Features
+
+Right-clicking (or clicking) the tray icon opens a rich context menu:
+- **Live Status Header**: Displays real-time state (`● Idle (Ready)`, `● Recording...`, `⏳ Transcribing...`).
+- **Configuration Information**:
+  - **Hotkey**: Shows the active push-to-talk key combination (e.g. `Hotkey: ctrl+space`).
+  - **STT Model**: Shows the Whisper model file and language (e.g. `STT Model: ggml-base.en.bin (en)`).
+  - **STT Engine**: Displays inference thread count and similarity matching threshold.
+  - **Audio Device**: Displays active microphone device name and sample rate.
+  - **Commands Submenu**: Displays count of loaded commands with an expandable submenu listing each command name and configured trigger phrases.
+  - **Config File Path**: Shows the active configuration file path.
+- **Quick Actions**:
+  - **Open Configuration File**: Opens the active configuration YAML file directly in your desktop's default text editor (via `xdg-open` or `$EDITOR`).
+  - **Reload Configuration**: Hot-reloads configuration from disk without restarting the daemon, updates the hotkey listener and STT engine if modified, updates the tray menu items immediately, and sends a desktop notification.
+  - **Quit VoiceCmd**: Gracefully shuts down the daemon and terminates audio capture.
+
+### Disabling the Tray
+
+If running in a headless environment, server, or without a desktop panel, you can disable the tray:
+- Via command-line: `voicecmd -no-tray`
+- Via YAML configuration:
+  ```yaml
+  tray:
+    enabled: false
+  ```
+If D-Bus is unreachable, `voicecmd` automatically falls back to headless mode without crashing.
+
+---
+
 ## Wayland / Compositor Integration (Niri, Sway, Hyprland)
 
 If you use a Wayland compositor and prefer binding the hotkey inside your compositor config instead of evdev, you can trigger `voicecmd` via its IPC socket:
@@ -235,8 +292,25 @@ binds {
 
 ### Hyprland (`~/.config/hypr/hyprland.conf`)
 ```ini
-bind = SUPER, V, exec, voicecmd -trigger start
-bindr = SUPER, V, exec, voicecmd -trigger stop
+bind = SUPER, V, exec, voicecmd trigger start
+bindr = SUPER, V, exec, voicecmd trigger stop
+```
+
+### IPC CLI Commands
+You can also interact directly with the running daemon using the CLI:
+```bash
+# Start or stop recording
+voicecmd trigger start
+voicecmd trigger stop
+
+# Check daemon status (e.g. idle or recording)
+voicecmd trigger status
+
+# Load a specific configuration file dynamically
+voicecmd trigger load ~/.config/voicecmd/config.conf
+
+# Reload the fallback/default configuration file
+voicecmd trigger load
 ```
 
 ---

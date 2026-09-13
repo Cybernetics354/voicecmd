@@ -7,6 +7,10 @@ hotkey:
   # Specific /dev/input/event* device path (leave empty to automatically listen on all connected keyboards)
   device: ""
 
+tray:
+  # Enable desktop system tray status indicator icon and context menu
+  enabled: true
+
 audio:
   # Audio input device (empty string uses system default microphone)
   device: ""

@@ -4,17 +4,32 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Hotkey   HotkeyConfig             `yaml:"hotkey"`
-	Hotket   HotkeyConfig             `yaml:"hotket,omitempty"` // Backwards compatibility with typo
-	Audio    AudioConfig              `yaml:"audio"`
-	STT      STTConfig                `yaml:"stt"`
-	Commands map[string]CommandConfig `yaml:"commands"`
-	Notify   ExecCommandConfig        `yaml:"notify"`
+	Hotkey     HotkeyConfig             `yaml:"hotkey"`
+	Hotket     HotkeyConfig             `yaml:"hotket,omitempty"` // Backwards compatibility with typo
+	Audio      AudioConfig              `yaml:"audio"`
+	STT        STTConfig                `yaml:"stt"`
+	Commands   map[string]CommandConfig `yaml:"commands"`
+	Notify     ExecCommandConfig        `yaml:"notify"`
+	Tray       TrayConfig               `yaml:"tray"`
+	ConfigPath string                   `yaml:"-"`
+}
+
+type TrayConfig struct {
+	Enabled *bool `yaml:"enabled"` // Enable system tray icon and menu (default: true)
+}
+
+// IsEnabled returns true if system tray is enabled (defaults to true if unset).
+func (t TrayConfig) IsEnabled() bool {
+	if t.Enabled == nil {
+		return true
+	}
+	return *t.Enabled
 }
 
 type HotkeyConfig struct {
@@ -75,42 +90,116 @@ func DefaultConfig() *Config {
 			Program: "notify-send",
 			Args:    []string{"VoiceCmd", "{transcript}"},
 		},
+		Tray: TrayConfig{
+			Enabled: boolPtr(true),
+		},
 	}
 }
 
-// Load loads configuration from the given file path.
-// If path is empty, it attempts to find config in default locations.
-func Load(path string) (*Config, error) {
-	cfg := DefaultConfig()
+func boolPtr(b bool) *bool {
+	return &b
+}
 
+// ExpandPath expands environment variables and ~ in file paths.
+func ExpandPath(path string) string {
 	if path == "" {
-		candidates := []string{
-			"config/config.yaml",
-			"config.yaml",
-			filepath.Join(os.Getenv("HOME"), ".config/voicecmd/config.yaml"),
-			"/etc/voicecmd/config.yaml",
+		return ""
+	}
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return home
 		}
-		for _, c := range candidates {
-			if _, err := os.Stat(c); err == nil {
-				path = c
-				break
-			}
+		return os.Getenv("HOME")
+	}
+	if strings.HasPrefix(path, "~/") {
+		home := ""
+		if h, err := os.UserHomeDir(); err == nil && h != "" {
+			home = h
+		} else {
+			home = os.Getenv("HOME")
+		}
+		if home != "" {
+			return filepath.Join(home, path[2:])
 		}
 	}
+	return os.ExpandEnv(path)
+}
 
-	if path == "" {
-		return nil, fmt.Errorf(
-			"no configuration file specified and none found in default locations",
+// DefaultCandidates returns candidate paths searched for fallback config files.
+func DefaultCandidates() []string {
+	var candidates []string
+	home := ""
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		home = h
+	} else {
+		home = os.Getenv("HOME")
+	}
+
+	candidates = append(candidates,
+		"config/config.yaml",
+		"config/config.yml",
+		"config/config.conf",
+		"config.yaml",
+		"config.yml",
+		"config.conf",
+	)
+
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".config/voicecmd/config.yaml"),
+			filepath.Join(home, ".config/voicecmd/config.yml"),
+			filepath.Join(home, ".config/voicecmd/config.conf"),
 		)
 	}
 
-	data, err := os.ReadFile(path)
+	candidates = append(candidates,
+		"/etc/voicecmd/config.yaml",
+		"/etc/voicecmd/config.yml",
+		"/etc/voicecmd/config.conf",
+	)
+
+	return candidates
+}
+
+// FindFallbackConfig searches the default candidate locations for an existing config file.
+func FindFallbackConfig() (string, error) {
+	for _, c := range DefaultCandidates() {
+		if _, err := os.Stat(c); err == nil {
+			if abs, err := filepath.Abs(c); err == nil {
+				return abs, nil
+			}
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("no configuration file specified and none found in default locations")
+}
+
+// Load loads configuration from the given file path.
+// If path is empty, it attempts to find config in default fallback locations.
+func Load(path string) (*Config, error) {
+	cfg := DefaultConfig()
+
+	resolvedPath := path
+	if resolvedPath == "" {
+		fallback, err := FindFallbackConfig()
+		if err != nil {
+			return nil, err
+		}
+		resolvedPath = fallback
+	} else {
+		resolvedPath = ExpandPath(resolvedPath)
+		if abs, err := filepath.Abs(resolvedPath); err == nil {
+			resolvedPath = abs
+		}
+	}
+
+	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
+		return nil, fmt.Errorf("failed to read config file %q: %w", resolvedPath, err)
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
+		return nil, fmt.Errorf("failed to parse config file %q: %w", resolvedPath, err)
 	}
 
 	// Handle backwards compatibility typo "hotket"
@@ -119,6 +208,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.applyDefaults()
+	cfg.ConfigPath = resolvedPath
 	return cfg, nil
 }
 
@@ -149,5 +239,8 @@ func (c *Config) applyDefaults() {
 	}
 	if c.STT.WavPath == "" {
 		c.STT.WavPath = "/tmp/voicecmd_recording.wav"
+	}
+	if c.Tray.Enabled == nil {
+		c.Tray.Enabled = boolPtr(true)
 	}
 }

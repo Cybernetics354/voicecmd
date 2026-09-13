@@ -47,6 +47,22 @@ func NewListener(comboStr, devicePath string, onPress, onRelease func()) (*Liste
 	}, nil
 }
 
+// UpdateCombo updates the listening key combination at runtime.
+func (l *Listener) UpdateCombo(comboStr string) error {
+	combo, err := ParseCombo(comboStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse hotkey combination: %w", err)
+	}
+
+	l.mu.Lock()
+	l.combo = combo
+	l.isTriggered = false
+	l.pressedKeys = make(map[evdev.EvCode]bool)
+	l.mu.Unlock()
+
+	return nil
+}
+
 // Start begins listening for the hotkey combination. Blocks until ctx is cancelled or a fatal error occurs.
 func (l *Listener) Start(ctx context.Context) error {
 	devices, err := l.openDevices()

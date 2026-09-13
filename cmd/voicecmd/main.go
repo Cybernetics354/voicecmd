@@ -6,36 +6,49 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	_ "net/http/pprof"
 	"voicecmd/internal/audio"
 	"voicecmd/internal/config"
 	"voicecmd/internal/executor"
 	"voicecmd/internal/hotkey"
 	"voicecmd/internal/matcher"
 	"voicecmd/internal/stt"
+	"voicecmd/internal/tray"
 )
 
 var Version = "1.0.0"
 
 type App struct {
-	cfg       *config.Config
-	recorder  *audio.Recorder
-	sttEngine *stt.Engine
-	listener  *hotkey.Listener
-	ipcServer *hotkey.IPCServer
+	cfg                *config.Config
+	recorder           *audio.Recorder
+	sttEngine          *stt.Engine
+	listener           *hotkey.Listener
+	ipcServer          *hotkey.IPCServer
+	trayMgr            *tray.Manager
+	fallbackConfigPath string
+	currentConfigPath  string
 
 	mu         sync.Mutex
 	isHandling bool
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "trigger" {
+		triggerArgs := os.Args[2:]
+		if len(triggerArgs) == 0 {
+			log.Fatal("Error: trigger command required: start, stop, status, or load [path]")
+		}
+		handleTriggerCommand(strings.Join(triggerArgs, " "))
+		return
+	}
+
 	configPath := flag.String(
 		"config",
 		"",
@@ -54,7 +67,7 @@ func main() {
 	triggerFlag := flag.String(
 		"trigger",
 		"",
-		"Send command to running voicecmd daemon via IPC: start, stop, or status",
+		"Send command to running voicecmd daemon via IPC: start, stop, status, or load [path]",
 	)
 	pttFlag := flag.Bool(
 		"ptt",
@@ -66,6 +79,11 @@ func main() {
 		0,
 		"Record audio for N seconds from microphone and save to test.wav",
 	)
+	noTrayFlag := flag.Bool(
+		"no-tray",
+		false,
+		"Disable system tray status icon and context menu",
+	)
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
@@ -76,7 +94,11 @@ func main() {
 	}
 
 	if *triggerFlag != "" {
-		handleTriggerCommand(*triggerFlag)
+		cmd := *triggerFlag
+		if len(flag.Args()) > 0 {
+			cmd = cmd + " " + strings.Join(flag.Args(), " ")
+		}
+		handleTriggerCommand(cmd)
 		return
 	}
 
@@ -96,6 +118,11 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 
+	fallbackPath := *configPath
+	if fallbackPath == "" {
+		fallbackPath = cfg.ConfigPath
+	}
+
 	// Direct transcription test mode
 	if *transcribeFlag != "" {
 		handleTranscribeFile(cfg, *transcribeFlag)
@@ -108,18 +135,34 @@ func main() {
 		return
 	}
 
-	go http.ListenAndServe("localhost:6060", nil)
-
 	// Run full daemon mode
-	runDaemon(cfg)
+	runDaemon(cfg, fallbackPath, !*noTrayFlag)
 }
 
 func handleTriggerCommand(cmd string) {
+	parts := strings.Fields(cmd)
+	if len(parts) > 0 {
+		sub := strings.ToLower(parts[0])
+		if (sub == "load" || sub == "reload") && len(parts) > 1 {
+			target := strings.TrimSpace(cmd[len(parts[0]):])
+			target = strings.Trim(target, `"'`)
+			if target != "" {
+				target = config.ExpandPath(target)
+				if abs, err := filepath.Abs(target); err == nil {
+					cmd = fmt.Sprintf("%s %s", sub, abs)
+				}
+			}
+		}
+	}
+
 	resp, err := hotkey.SendIPCCommand(hotkey.DefaultSocketPath, cmd)
 	if err != nil {
 		log.Fatalf("IPC error: %v", err)
 	}
 	fmt.Println(resp)
+	if strings.HasPrefix(resp, "ERR:") {
+		os.Exit(1)
+	}
 }
 
 func handleListDevices() {
@@ -281,7 +324,7 @@ func runInteractivePTT(cfg *config.Config) {
 	_ = audio.Terminate()
 }
 
-func runDaemon(cfg *config.Config) {
+func runDaemon(cfg *config.Config, fallbackPath string, enableTray bool) {
 	fmt.Println("==================================================")
 	fmt.Println("  VoiceCmd - Voice Activated Command Controller   ")
 	fmt.Printf("  Version: %s\n", Version)
@@ -303,13 +346,45 @@ func runDaemon(cfg *config.Config) {
 	rec := audio.NewRecorder(cfg.Audio.Device, cfg.Audio.SampleRate, cfg.Audio.Channels)
 
 	app := &App{
-		cfg:       cfg,
-		recorder:  rec,
-		sttEngine: engine,
+		cfg:                cfg,
+		recorder:           rec,
+		sttEngine:          engine,
+		fallbackConfigPath: fallbackPath,
+		currentConfigPath:  cfg.ConfigPath,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Initialize System Tray if enabled
+	trayEnabled := enableTray && cfg.Tray.IsEnabled()
+	if trayEnabled {
+		if !tray.IsDBusAvailable() {
+			fmt.Println("  Tray:    Disabled (D-Bus session bus not available)")
+		} else {
+			app.trayMgr = tray.NewManager(
+				cfg,
+				app.currentConfigPath,
+				func() (string, error) {
+					return app.LoadConfig(app.currentConfigPath)
+				},
+				func() {
+					fmt.Println("\nQuit requested from system tray. Exiting...")
+					cancel()
+					_ = audio.Terminate()
+					os.Exit(0)
+				},
+			)
+			if err := app.trayMgr.Start(); err != nil {
+				log.Printf("⚠️  [TRAY] Failed to initialize system tray: %v (continuing without tray)", err)
+				app.trayMgr = nil
+			} else {
+				fmt.Println("  Tray:    Active (StatusNotifierItem registered on D-Bus)")
+			}
+		}
+	} else {
+		fmt.Println("  Tray:    Disabled")
+	}
 
 	// Signal handling
 	sigChan := make(chan os.Signal, 1)
@@ -319,7 +394,27 @@ func runDaemon(cfg *config.Config) {
 		fmt.Println("\nShutdown signal received. Exiting...")
 		cancel()
 		_ = audio.Terminate()
+		if app.trayMgr != nil {
+			app.trayMgr.Quit()
+		}
+
 		os.Exit(0)
+	}()
+
+	hupChan := make(chan os.Signal, 1)
+	signal.Notify(hupChan, syscall.SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hupChan:
+				fmt.Println("\nSIGHUP received. Reloading config...")
+				if _, err := app.LoadConfig(app.currentConfigPath); err != nil {
+					log.Printf("Error reloading config on SIGHUP: %v", err)
+				}
+			}
+		}
 	}()
 
 	// Start IPC Unix Socket Server for external triggers
@@ -334,6 +429,7 @@ func runDaemon(cfg *config.Config) {
 			return "idle"
 		},
 	)
+	app.ipcServer.SetLoadHandler(app.LoadConfig)
 	go func() {
 		if err := app.ipcServer.Start(ctx); err != nil {
 			log.Printf("[IPC] Socket server stopped: %v", err)
@@ -365,6 +461,73 @@ func runDaemon(cfg *config.Config) {
 		// Keep daemon running for IPC socket even if evdev is blocked
 		<-ctx.Done()
 	}
+
+	if app.trayMgr != nil {
+		app.trayMgr.Quit()
+	}
+}
+
+func (a *App) LoadConfig(path string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	targetPath := strings.TrimSpace(path)
+	isFallback := false
+	if targetPath == "" {
+		isFallback = true
+		targetPath = a.fallbackConfigPath
+	}
+
+	newCfg, err := config.Load(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to load config %q: %w", targetPath, err)
+	}
+
+	// Update STT engine if STT parameters changed
+	sttChanged := a.cfg != nil && (newCfg.STT.BinaryPath != a.cfg.STT.BinaryPath ||
+		newCfg.STT.ModelPath != a.cfg.STT.ModelPath ||
+		newCfg.STT.Language != a.cfg.STT.Language ||
+		newCfg.STT.Threads != a.cfg.STT.Threads)
+
+	if a.sttEngine != nil && sttChanged {
+		engine, err := stt.NewEngine(
+			newCfg.STT.BinaryPath,
+			newCfg.STT.ModelPath,
+			newCfg.STT.Language,
+			newCfg.STT.Threads,
+		)
+		if err != nil {
+			return "", fmt.Errorf("failed to initialize STT engine with new config: %w", err)
+		}
+		a.sttEngine = engine
+	}
+
+	// Update hotkey listener combo if key changed
+	if a.listener != nil && (a.cfg == nil || newCfg.Hotkey.Key != a.cfg.Hotkey.Key) {
+		if err := a.listener.UpdateCombo(newCfg.Hotkey.Key); err != nil {
+			log.Printf("Warning: failed to update hotkey combo to %q: %v", newCfg.Hotkey.Key, err)
+		} else {
+			fmt.Printf("🔄 [HOTKEY UPDATED] Now listening on %q\n", newCfg.Hotkey.Key)
+		}
+	}
+
+	oldPath := a.currentConfigPath
+	a.cfg = newCfg
+	a.currentConfigPath = newCfg.ConfigPath
+
+	if a.trayMgr != nil {
+		a.trayMgr.UpdateConfig(newCfg, a.currentConfigPath)
+	}
+
+	var msg string
+	if isFallback {
+		msg = fmt.Sprintf("loaded fallback config from %s (%d commands)", a.currentConfigPath, len(newCfg.Commands))
+	} else {
+		msg = fmt.Sprintf("loaded config from %s (%d commands)", a.currentConfigPath, len(newCfg.Commands))
+	}
+
+	fmt.Printf("🔄 [CONFIG RELOADED] %s (previous: %s)\n", msg, oldPath)
+	return msg, nil
 }
 
 func (a *App) OnPress() {
@@ -375,9 +538,16 @@ func (a *App) OnPress() {
 	}
 	a.mu.Unlock()
 
+	if a.trayMgr != nil {
+		a.trayMgr.SetState(tray.StateRecording)
+	}
+
 	fmt.Println("\n🔴 [RECORDING] Combination pressed. Listening...")
 	if err := a.recorder.Start(); err != nil {
 		log.Printf("Failed to start recording: %v", err)
+		if a.trayMgr != nil {
+			a.trayMgr.SetState(tray.StateIdle)
+		}
 	}
 }
 
@@ -389,6 +559,9 @@ func (a *App) OnRelease() {
 	samples, dur, err := a.recorder.Stop()
 	if err != nil {
 		log.Printf("Error stopping recording: %v", err)
+		if a.trayMgr != nil {
+			a.trayMgr.SetState(tray.StateIdle)
+		}
 		return
 	}
 
@@ -397,6 +570,9 @@ func (a *App) OnRelease() {
 			"⚠️  [CANCELLED] Key held for only %.2fs (<0.3s), ignoring tap.\n",
 			dur.Seconds(),
 		)
+		if a.trayMgr != nil {
+			a.trayMgr.SetState(tray.StateIdle)
+		}
 		return
 	}
 
@@ -406,8 +582,14 @@ func (a *App) OnRelease() {
 		len(samples),
 	)
 
+	if a.trayMgr != nil {
+		a.trayMgr.SetState(tray.StateTranscribing)
+	}
+
 	a.mu.Lock()
 	a.isHandling = true
+	cfg := a.cfg
+	engine := a.sttEngine
 	a.mu.Unlock()
 
 	go func() {
@@ -415,9 +597,12 @@ func (a *App) OnRelease() {
 			a.mu.Lock()
 			a.isHandling = false
 			a.mu.Unlock()
+			if a.trayMgr != nil {
+				a.trayMgr.SetState(tray.StateIdle)
+			}
 		}()
 
-		processRecordedAudio(a.cfg, a.sttEngine, samples)
+		processRecordedAudio(cfg, engine, samples)
 	}()
 }
 

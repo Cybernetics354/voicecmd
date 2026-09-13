@@ -19,11 +19,16 @@ type IPCServer struct {
 	onPress    func()
 	onRelease  func()
 	getStatus  func() string
+	onLoad     func(path string) (string, error)
 	mu         sync.Mutex
 }
 
 // NewIPCServer creates a new IPC socket server.
-func NewIPCServer(socketPath string, onPress, onRelease func(), getStatus func() string) *IPCServer {
+func NewIPCServer(
+	socketPath string,
+	onPress, onRelease func(),
+	getStatus func() string,
+) *IPCServer {
 	if socketPath == "" {
 		socketPath = DefaultSocketPath
 	}
@@ -33,6 +38,13 @@ func NewIPCServer(socketPath string, onPress, onRelease func(), getStatus func()
 		onRelease:  onRelease,
 		getStatus:  getStatus,
 	}
+}
+
+// SetLoadHandler sets the callback for loading configuration.
+func (s *IPCServer) SetLoadHandler(handler func(path string) (string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onLoad = handler
 }
 
 // Start begins listening on the Unix socket.
@@ -47,7 +59,7 @@ func (s *IPCServer) Start(ctx context.Context) error {
 	s.listener = l
 
 	// Set socket permissions so current user can read/write
-	os.Chmod(s.socketPath, 0660)
+	os.Chmod(s.socketPath, 0o660)
 
 	go func() {
 		<-ctx.Done()
@@ -79,7 +91,14 @@ func (s *IPCServer) handleConn(conn net.Conn) {
 	}
 
 	for scanner.Scan() {
-		cmd := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		cmd := strings.ToLower(parts[0])
+
 		switch cmd {
 		case "start", "press", "down":
 			if s.onPress != nil {
@@ -97,8 +116,36 @@ func (s *IPCServer) handleConn(conn net.Conn) {
 				status = s.getStatus()
 			}
 			fmt.Fprintf(conn, "OK: status=%s\n", status)
+		case "load", "reload":
+			arg := strings.TrimSpace(line[len(parts[0]):])
+			arg = strings.Trim(arg, `"'`)
+
+			s.mu.Lock()
+			loadFn := s.onLoad
+			s.mu.Unlock()
+
+			if loadFn == nil {
+				fmt.Fprintln(conn, "ERR: config loading not supported")
+				return
+			}
+
+			msg, err := loadFn(arg)
+			if err != nil {
+				fmt.Fprintf(conn, "ERR: %v\n", err)
+				return
+			}
+
+			if msg == "" {
+				msg = "config loaded"
+			}
+			fmt.Fprintf(conn, "OK: %s\n", msg)
+
 		default:
-			fmt.Fprintf(conn, "ERR: unknown command %q. Valid commands: start, stop, status\n", cmd)
+			fmt.Fprintf(
+				conn,
+				"ERR: unknown command %q. Valid commands: start, stop, status, load\n",
+				cmd,
+			)
 		}
 	}
 }
