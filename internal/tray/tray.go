@@ -50,10 +50,12 @@ type Manager struct {
 	mConfigFile   *systray.MenuItem
 	mOpenConfig   *systray.MenuItem
 	mReloadConfig *systray.MenuItem
+	mRestart      *systray.MenuItem
 	mQuit         *systray.MenuItem
 
-	onReload func() (string, error)
-	onQuit   func()
+	onReload   func() (string, error)
+	onQuit     func()
+	onRestart  func()
 }
 
 // NewManager creates a new tray manager instance.
@@ -62,6 +64,7 @@ func NewManager(
 	configPath string,
 	onReload func() (string, error),
 	onQuit func(),
+	onRestart func(),
 ) *Manager {
 	return &Manager{
 		cfg:        cfg,
@@ -70,6 +73,7 @@ func NewManager(
 		readyChan:  make(chan struct{}),
 		onReload:   onReload,
 		onQuit:     onQuit,
+		onRestart:  onRestart,
 	}
 }
 
@@ -134,6 +138,7 @@ func (m *Manager) onReady() {
 	// Action menu items
 	m.mOpenConfig = systray.AddMenuItem("Open Configuration File", "Open config file in default editor")
 	m.mReloadConfig = systray.AddMenuItem("Reload Configuration", "Reload configuration from disk")
+	m.mRestart = systray.AddMenuItem("Restart VoiceCmd", "Fully restart the daemon process")
 
 	systray.AddSeparator()
 
@@ -176,6 +181,11 @@ func (m *Manager) handleClicks() {
 					log.Printf("[TRAY] %s", msg)
 					sendNotification("VoiceCmd", msg)
 				}
+			}
+
+		case <-m.mRestart.ClickedCh:
+			if m.onRestart != nil {
+				m.onRestart()
 			}
 
 		case <-m.mQuit.ClickedCh:

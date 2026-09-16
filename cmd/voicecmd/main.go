@@ -380,6 +380,16 @@ func runDaemon(cfg *config.Config, fallbackPath string, enableTray bool) {
 					_ = audio.Terminate()
 					os.Exit(0)
 				},
+				func() {
+					fmt.Println("\nRestart requested from system tray. Restarting...")
+					_ = audio.Terminate()
+					exe, err := os.Executable()
+					if err != nil {
+						log.Printf("[RESTART] Failed to resolve executable: %v", err)
+						return
+					}
+					_ = syscall.Exec(exe, os.Args, os.Environ())
+				},
 			)
 			if err := app.trayMgr.Start(); err != nil {
 				log.Printf("⚠️  [TRAY] Failed to initialize system tray: %v (continuing without tray)", err)

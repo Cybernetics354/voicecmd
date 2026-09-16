@@ -254,6 +254,7 @@ commands:
 		func() {
 			quitCalled = true
 		},
+		nil, // restart not tested here
 	)
 	app.trayMgr = mgr
 
