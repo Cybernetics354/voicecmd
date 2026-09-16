@@ -4,14 +4,17 @@ A fast, lightweight, offline voice command daemon written in Go for Linux.
 
 Hold down a configured key combination (e.g., `Ctrl+Space`) to record your microphone. When you release the keys, [whisper.cpp](https://github.com/ggerganov/whisper.cpp) automatically transcribes your speech locally and executes the matched command according to your YAML configuration mapping.
 
+The **dictate** feature lets you hold a separate key, speak freely, and have the transcribed text typed directly into whatever window is focused — no command matching, just speech-to-text input.
+
 ---
 
 ## Features
 
 - **Push-To-Talk Global Hotkey**: Uses Linux kernel `evdev` to capture key press and release events directly across X11, Wayland, and console/TTY.
+- **Hold-To-Dictate**: Hold a separate key, speak, release — transcribed text is typed into the focused window via `xdotool` (X11) or `ydotool` (Wayland). No command matching; raw speech-to-text input anywhere.
 - **Dynamic System Tray & Context Menu**:
-  - **State-aware Icon**: Changes icon color and badge dynamically based on daemon state (**Idle**, **Recording**, and **Transcribing**).
-  - **Live Configuration Display**: Displays active hotkey, Whisper STT model & language, engine parameters, audio device, loaded voice commands with an expandable submenu of phrases, and the current config file path.
+  - **State-aware Icon**: Changes icon color and badge dynamically based on daemon state (**Idle**, **Recording**, **Transcribing**, and **Dictating**).
+  - **Live Configuration Display**: Displays active hotkey, dictate key, Whisper STT model & language, engine parameters, audio device, loaded voice commands with an expandable submenu of phrases, and the current config file path.
   - **Quick Actions**: "Reload Configuration" (with desktop notification), "Open Configuration File" in default desktop editor, and "Quit VoiceCmd".
 - **Local & Offline Speech-to-Text**: Integrates directly with `whisper.cpp` (`whisper-cli`), ensuring low latency and privacy without cloud dependencies.
 - **Intelligent Command Matching**:
@@ -46,6 +49,8 @@ voicecmd/
 │   ├── config/
 │   │   ├── config.go         # Configuration loader & defaults
 │   │   └── config_test.go    # Config tests
+│   ├── dictate/
+│   │   └── dictate.go        # Hold-to-dictate: record, transcribe, type via xdotool/ydotool
 │   ├── executor/
 │   │   ├── executor.go       # Command execution with placeholder expansion
 │   │   └── executor_test.go  # Executor tests
@@ -63,7 +68,7 @@ voicecmd/
 │   │   └── *_test.go         # STT tests
 │   └── tray/
 │       ├── tray.go           # System tray manager & StatusNotifierItem DBus integration
-│       ├── state.go          # State machine (Idle, Recording, Transcribing) & tooltips
+│       ├── state.go          # State machine (Idle, Recording, Transcribing, Dictating) & tooltips
 │       ├── icon.go           # Crisp procedural anti-aliased RGBA PNG icon generator
 │       ├── open_config.go    # Cross-desktop configuration file opener (xdg-open / editor)
 │       └── tray_test.go      # Tray unit and icon validation tests
@@ -165,6 +170,16 @@ stt:
   # WAV output path
   wav_path: "/tmp/voicecmd_recording.wav"
 
+dictate:
+  # Enable hold-to-dictate: hold key, speak, release, text is typed into focused window
+  enabled: false
+  # Key combo to hold while dictating (must differ from hotkey.key)
+  key: "alt+space"
+  # Optional: specific /dev/input/event* device, or empty to auto-detect keyboards
+  device: ""
+  # Program used to type text: "xdotool" (X11) or "ydotool" (Wayland)
+  typer: "xdotool"
+
 commands:
   terminal:
     phrases:
@@ -244,15 +259,17 @@ The tray icon immediately changes appearance based on VoiceCmd's operational sta
 | State | Icon Badge | Description | Hover Tooltip |
 |---|---|---|---|
 | **Idle** | Slate circle + Cyan microphone | Daemon listening, ready for input | `VoiceCmd - Idle (Hotkey: ctrl+space)` |
-| **Recording** | Crimson red circle + White microphone + Indicator | Active microphone capture | `VoiceCmd - Recording microphone...` |
-| **Transcribing** | Amber circle + White microphone + Busy accent | Whisper STT inference & matching | `VoiceCmd - Transcribing speech...` |
+| **Recording** | Crimson red circle + White microphone + Indicator | Active microphone capture (command mode) | `VoiceCmd - Recording microphone...` |
+| **Transcribing** | Amber circle + White microphone + Busy accent | Whisper STT inference & command matching | `VoiceCmd - Transcribing speech...` |
+| **Dictating** | Violet circle + White microphone + Emerald dot | Active microphone capture (dictate mode) | `VoiceCmd - Dictating (release to type)...` |
 
 ### Context Menu Features
 
 Right-clicking (or clicking) the tray icon opens a rich context menu:
-- **Live Status Header**: Displays real-time state (`● Idle (Ready)`, `● Recording...`, `⏳ Transcribing...`).
+- **Live Status Header**: Displays real-time state (`● Idle (Ready)`, `● Recording...`, `⏳ Transcribing...`, `🎙 Dictating...`).
 - **Configuration Information**:
   - **Hotkey**: Shows the active push-to-talk key combination (e.g. `Hotkey: ctrl+space`).
+  - **Dictate**: Shows dictate mode status (e.g. `Dictate: alt+space (via xdotool)` or `Dictate: disabled`).
   - **STT Model**: Shows the Whisper model file and language (e.g. `STT Model: ggml-base.en.bin (en)`).
   - **STT Engine**: Displays inference thread count and similarity matching threshold.
   - **Audio Device**: Displays active microphone device name and sample rate.
@@ -273,6 +290,39 @@ If running in a headless environment, server, or without a desktop panel, you ca
     enabled: false
   ```
 If D-Bus is unreachable, `voicecmd` automatically falls back to headless mode without crashing.
+
+---
+
+## Hold-To-Dictate
+
+Dictate mode lets you speak freely and have the transcribed text typed directly into any focused window — a text editor, browser address bar, chat input, terminal, etc.
+
+**How it works:** hold the dictate key → speak → release → whisper transcribes → text is typed with a trailing space.
+
+### Setup
+
+1. Install a typing tool:
+   - **X11**: `sudo apt install xdotool` / `sudo pacman -S xdotool`
+   - **Wayland**: install `ydotool` and start its daemon (`ydotoold`), which requires write access to `/dev/uinput`
+
+2. Enable dictate in `config.yaml`:
+   ```yaml
+   dictate:
+     enabled: true
+     key: "alt+space"   # must differ from hotkey.key
+     typer: "xdotool"   # or "ydotool" on Wayland
+   ```
+
+3. Reload config or restart the daemon.
+
+The tray icon turns **violet** while dictating, then **amber** briefly while transcribing, then returns to **slate** idle.
+
+### Notes
+
+- The dictate key and command hotkey must be different combos.
+- Dictate uses the same Whisper model and audio device as the command hotkey.
+- Recorded WAV is saved to a separate file (`_dictate` suffix) to avoid colliding with command recordings.
+- The `{transcript}` placeholder is not involved — dictate bypasses command matching entirely.
 
 ---
 

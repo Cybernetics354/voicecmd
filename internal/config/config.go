@@ -14,10 +14,19 @@ type Config struct {
 	Hotket     HotkeyConfig             `yaml:"hotket,omitempty"` // Backwards compatibility with typo
 	Audio      AudioConfig              `yaml:"audio"`
 	STT        STTConfig                `yaml:"stt"`
+	Dictate    DictateConfig            `yaml:"dictate"`
 	Commands   map[string]CommandConfig `yaml:"commands"`
 	Notify     ExecCommandConfig        `yaml:"notify"`
 	Tray       TrayConfig               `yaml:"tray"`
 	ConfigPath string                   `yaml:"-"`
+}
+
+// DictateConfig controls the hold-to-dictate feature.
+type DictateConfig struct {
+	Enabled bool   `yaml:"enabled"` // Enable dictate mode (default: false)
+	Key     string `yaml:"key"`     // Hotkey combo to hold while speaking (e.g. "alt+space")
+	Device  string `yaml:"device"`  // Optional specific input device path
+	Typer   string `yaml:"typer"`   // Program to type text: "xdotool" (default) or "ydotool"
 }
 
 type TrayConfig struct {
@@ -239,6 +248,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.STT.WavPath == "" {
 		c.STT.WavPath = "/tmp/voicecmd_recording.wav"
+	}
+	if c.Dictate.Enabled && c.Dictate.Key == "" {
+		c.Dictate.Key = "alt+space"
+	}
+	if c.Dictate.Typer == "" {
+		c.Dictate.Typer = "xdotool"
 	}
 	if c.Tray.Enabled == nil {
 		c.Tray.Enabled = boolPtr(true)

@@ -34,6 +34,16 @@ stt:
   # WAV output file location
   wav_path: "/tmp/voicecmd_recording.wav"
 
+dictate:
+  # Enable hold-to-dictate: hold key, speak, release, text is typed into focused window
+  enabled: false
+  # Key combo to hold while speaking (must differ from hotkey.key)
+  key: "alt+space"
+  # Specific /dev/input/event* device (leave empty to auto-detect keyboards)
+  device: ""
+  # Program used to type text: "xdotool" (X11) or "ydotool" (Wayland)
+  typer: "xdotool"
+
 commands:
   # Open terminal
   terminal:

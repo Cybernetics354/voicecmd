@@ -41,6 +41,7 @@ type Manager struct {
 	// Context menu items
 	mStatus       *systray.MenuItem
 	mHotkey       *systray.MenuItem
+	mDictate      *systray.MenuItem
 	mSTT          *systray.MenuItem
 	mSTTDetails   *systray.MenuItem
 	mAudio        *systray.MenuItem
@@ -109,6 +110,9 @@ func (m *Manager) onReady() {
 	// Display configuration items
 	m.mHotkey = systray.AddMenuItem(formatHotkey(m.cfg), "Configured push-to-talk hotkey")
 	m.mHotkey.Disable()
+
+	m.mDictate = systray.AddMenuItem(formatDictate(m.cfg), "Hold-to-dictate configuration")
+	m.mDictate.Disable()
 
 	m.mSTT = systray.AddMenuItem(formatSTT(m.cfg), "Whisper model and language")
 	m.mSTT.Disable()
@@ -222,6 +226,9 @@ func (m *Manager) UpdateConfig(newCfg *config.Config, newPath string) {
 	if m.mHotkey != nil {
 		m.mHotkey.SetTitle(formatHotkey(newCfg))
 	}
+	if m.mDictate != nil {
+		m.mDictate.SetTitle(formatDictate(newCfg))
+	}
 	if m.mSTT != nil {
 		m.mSTT.SetTitle(formatSTT(newCfg))
 	}
@@ -296,6 +303,13 @@ func formatHotkey(cfg *config.Config) string {
 		return "Hotkey: ctrl+space"
 	}
 	return fmt.Sprintf("Hotkey: %s", cfg.Hotkey.Key)
+}
+
+func formatDictate(cfg *config.Config) string {
+	if cfg == nil || !cfg.Dictate.Enabled {
+		return "Dictate: disabled"
+	}
+	return fmt.Sprintf("Dictate: %s (via %s)", cfg.Dictate.Key, cfg.Dictate.Typer)
 }
 
 func formatSTT(cfg *config.Config) string {

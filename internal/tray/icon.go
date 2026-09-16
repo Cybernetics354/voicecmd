@@ -13,6 +13,7 @@ var (
 	iconIdle         []byte
 	iconRecording    []byte
 	iconTranscribing []byte
+	iconDictating    []byte
 	iconInitOnce     sync.Once
 )
 
@@ -38,6 +39,12 @@ func initIcons() {
 		transFg := color.RGBA{R: 255, G: 255, B: 255, A: 255}
 		transDot := color.RGBA{R: 253, G: 230, B: 138, A: 255}
 		iconTranscribing = generatePNG(transBg, transFg, &transDot)
+
+		// Dictating: Purple badge with white microphone and cyan accent dot
+		dictBg := color.RGBA{R: 124, G: 58, B: 237, A: 255}  // #7c3aed violet-600
+		dictFg := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+		dictDot := color.RGBA{R: 167, G: 243, B: 208, A: 255} // emerald-200 dot
+		iconDictating = generatePNG(dictBg, dictFg, &dictDot)
 	})
 }
 
@@ -49,6 +56,8 @@ func IconForState(state State) []byte {
 		return iconRecording
 	case StateTranscribing:
 		return iconTranscribing
+	case StateDictating:
+		return iconDictating
 	default:
 		return iconIdle
 	}

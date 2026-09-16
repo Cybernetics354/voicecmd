@@ -10,6 +10,8 @@ const (
 	StateRecording State = "recording"
 	// StateTranscribing indicates VoiceCmd is transcribing audio with Whisper and executing commands.
 	StateTranscribing State = "transcribing"
+	// StateDictating indicates VoiceCmd is recording audio for dictation (hold-to-dictate mode).
+	StateDictating State = "dictating"
 )
 
 // String returns the string representation of State.
@@ -24,6 +26,8 @@ func (s State) StatusText() string {
 		return "● Recording..."
 	case StateTranscribing:
 		return "⏳ Transcribing..."
+	case StateDictating:
+		return "🎙 Dictating..."
 	default:
 		return "● Idle (Ready)"
 	}
@@ -36,6 +40,8 @@ func (s State) Tooltip(hotkey string) string {
 		return "VoiceCmd - Recording microphone..."
 	case StateTranscribing:
 		return "VoiceCmd - Transcribing speech..."
+	case StateDictating:
+		return "VoiceCmd - Dictating (release to type)..."
 	default:
 		if hotkey != "" {
 			return "VoiceCmd - Idle (Hotkey: " + hotkey + ")"

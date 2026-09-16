@@ -16,6 +16,7 @@ import (
 
 	"voicecmd/internal/audio"
 	"voicecmd/internal/config"
+	"voicecmd/internal/dictate"
 	"voicecmd/internal/executor"
 	"voicecmd/internal/hotkey"
 	"voicecmd/internal/matcher"
@@ -34,6 +35,11 @@ type App struct {
 	trayMgr            *tray.Manager
 	fallbackConfigPath string
 	currentConfigPath  string
+
+	// dictate mode
+	dictateRecorder  *audio.Recorder
+	dictateListener  *hotkey.Listener
+	dictateCtxCancel context.CancelFunc
 
 	mu         sync.Mutex
 	isHandling bool
@@ -450,6 +456,12 @@ func runDaemon(cfg *config.Config, fallbackPath string, enableTray bool) {
 	app.listener = listener
 
 	fmt.Println("\nListening for hotkey... Hold key combo to record, release to transcribe.")
+
+	// Start dictate listener if enabled
+	if cfg.Dictate.Enabled && cfg.Dictate.Key != "" {
+		app.startDictateListener(ctx, cfg)
+	}
+
 	if err := listener.Start(ctx); err != nil {
 		fmt.Printf("\n⚠️  Evdev hotkey listener error: %v\n", err)
 		fmt.Println(
@@ -508,6 +520,21 @@ func (a *App) LoadConfig(path string) (string, error) {
 			log.Printf("Warning: failed to update hotkey combo to %q: %v", newCfg.Hotkey.Key, err)
 		} else {
 			fmt.Printf("🔄 [HOTKEY UPDATED] Now listening on %q\n", newCfg.Hotkey.Key)
+		}
+	}
+
+	// Restart dictate listener if dictate config changed
+	dictateChanged := a.cfg == nil ||
+		newCfg.Dictate.Enabled != a.cfg.Dictate.Enabled ||
+		newCfg.Dictate.Key != a.cfg.Dictate.Key ||
+		newCfg.Dictate.Device != a.cfg.Dictate.Device
+	if dictateChanged {
+		if a.dictateCtxCancel != nil {
+			a.dictateCtxCancel()
+			a.dictateListener = nil
+		}
+		if newCfg.Dictate.Enabled && newCfg.Dictate.Key != "" {
+			a.startDictateListener(context.Background(), newCfg)
 		}
 	}
 
@@ -603,6 +630,75 @@ func (a *App) OnRelease() {
 		}()
 
 		processRecordedAudio(cfg, engine, samples)
+	}()
+}
+
+func (a *App) startDictateListener(parentCtx context.Context, cfg *config.Config) {
+	// Cancel any previous dictate listener
+	if a.dictateCtxCancel != nil {
+		a.dictateCtxCancel()
+	}
+	dictateCtx, cancel := context.WithCancel(parentCtx)
+	a.dictateCtxCancel = cancel
+
+	if a.dictateRecorder == nil {
+		a.dictateRecorder = audio.NewRecorder(cfg.Audio.Device, cfg.Audio.SampleRate, cfg.Audio.Channels)
+	}
+
+	dl, err := hotkey.NewListener(
+		cfg.Dictate.Key,
+		cfg.Dictate.Device,
+		a.onDictatePress,
+		a.onDictateRelease,
+	)
+	if err != nil {
+		log.Printf("[DICTATE] Failed to create listener for %q: %v", cfg.Dictate.Key, err)
+		return
+	}
+	a.dictateListener = dl
+	fmt.Printf("  Dictate: Active (key: %s, typer: %s)\n", cfg.Dictate.Key, cfg.Dictate.Typer)
+
+	go func() {
+		if err := dl.Start(dictateCtx); err != nil {
+			log.Printf("[DICTATE] Listener stopped: %v", err)
+		}
+	}()
+}
+
+func (a *App) onDictatePress() {
+	if a.dictateRecorder == nil || a.dictateRecorder.IsRecording() {
+		return
+	}
+	fmt.Println("[DICTATE] Key held. Listening...")
+	if a.trayMgr != nil {
+		a.trayMgr.SetState(tray.StateDictating)
+	}
+	if err := a.dictateRecorder.Start(); err != nil {
+		log.Printf("[DICTATE] Failed to start recording: %v", err)
+		if a.trayMgr != nil {
+			a.trayMgr.SetState(tray.StateIdle)
+		}
+	}
+}
+
+func (a *App) onDictateRelease() {
+	a.mu.Lock()
+	cfg := a.cfg
+	engine := a.sttEngine
+	rec := a.dictateRecorder
+	trayMgr := a.trayMgr
+	a.mu.Unlock()
+
+	if trayMgr != nil {
+		trayMgr.SetState(tray.StateTranscribing)
+	}
+	go func() {
+		defer func() {
+			if trayMgr != nil {
+				trayMgr.SetState(tray.StateIdle)
+			}
+		}()
+		dictate.Handle(cfg, engine, rec)
 	}()
 }
 
